@@ -1,407 +1,932 @@
+
 /**
- * RentFlow - Application Core Module (js/app.js)
- * Coordinates Dashboard, Payments, TenantManager, InvoiceManager, and WhatsAppManager.
+ * RentFlow - Application Core Module
+ * js/app.js
+ *
+ * Coordinates:
+ * Dashboard, Payments, TenantManager,
+ * InvoiceManager, WhatsAppManager and Settings.
  */
 
-(function (window) {
+(function (window, document) {
     'use strict';
+
+    // ==========================================
+    // 1. CONFIGURATION
+    // ==========================================
 
     const PAYMENTS_STORAGE_KEY = 'rentflow_payments';
     const SETTINGS_STORAGE_KEY = 'rentflow_settings';
 
-    // Application State
-    let payments = [];
-    let settings = {
+    const DEFAULT_SETTINGS = {
         propertyName: 'Flat 4B, Sunset Apartments',
         landlordName: 'Property Owner',
         defaultRent: 1200
     };
+
+    let payments = [];
+    let settings = { ...DEFAULT_SETTINGS };
     let currentSelectedPeriod = '';
 
-    // Cached DOM References
     let elements = {};
+    let initialized = false;
 
-    /**
-     * Cache all primary DOM references
-     */
-    function cacheDOM() {
-        elements = {
-            // Navigation & Header
-            navLinks: document.querySelectorAll('.sidebar-nav .nav-link'),
-            contentSections: document.querySelectorAll('.content-section'),
-            sidebar: document.querySelector('.sidebar'),
-            sidebarToggle: document.getElementById('sidebar-toggle'),
-            pageTitle: document.getElementById('page-title'),
-            currentDate: document.getElementById('current-date'),
-            feedbackContainer: document.getElementById('feedback-container'),
+    // ==========================================
+    // 2. GENERAL HELPERS
+    // ==========================================
 
-            // Summary Cards
-            summaryTotalRent: document.getElementById('summary-total-rent'),
-            summaryCollectedRent: document.getElementById('summary-collected-rent'),
-            summaryPendingRent: document.getElementById('summary-pending-rent'),
-            summaryTotalTenants: document.getElementById('summary-total-tenants'),
-            monthlyOverviewContent: document.getElementById('monthly-overview-content'),
-
-            // Modals & Buttons
-            paymentModal: document.getElementById('payment-modal'),
-            paymentForm: document.getElementById('payment-form'),
-            paymentTenantSelect: document.getElementById('payment-tenant-select'),
-            paymentMonthInput: document.getElementById('payment-month'),
-            paymentAmountInput: document.getElementById('payment-amount'),
-            paymentDateInput: document.getElementById('payment-date'),
-            btnOpenPaymentModal: document.getElementById('btn-open-payment-modal'),
-            btnRecordPaymentHeader: document.getElementById('btn-record-payment'),
-            paymentModalCloseBtns: document.querySelectorAll('#payment-modal .modal-close-btn, #payment-modal .modal-cancel-btn'),
-
-            // Tables
-            paymentTableBody: document.getElementById('payment-table-body'),
-
-            // Invoices
-            invoiceSection: document.getElementById('invoice-section'),
-            btnGenerateInvoice: document.getElementById('btn-generate-invoice'),
-            invoicePreviewContainer: document.getElementById('invoice-preview-container'),
-
-            // Settings
-            settingsForm: document.getElementById('settings-form'),
-            settingPropertyName: document.getElementById('setting-property-name'),
-            settingLandlordName: document.getElementById('setting-landlord-name'),
-            settingDefaultRent: document.getElementById('setting-default-rent')
-        };
+    function roundMoney(value) {
+        return Math.round((value + Number.EPSILON) * 100) / 100;
     }
 
-    /**
-     * Generate unique identifier for payment records
-     */
-    function generateId() {
-        return 'pay_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 8);
+    function parseMoney(value) {
+        if (value === null || value === undefined || value === '') {
+            return 0;
+        }
+
+        const number = Number(value);
+
+        return Number.isFinite(number) && number >= 0
+            ? roundMoney(number)
+            : 0;
     }
 
-    /**
-     * Format currency value in INR
-     */
     function formatCurrency(amount) {
-        const num = Number(amount);
-        if (isNaN(num)) return '₹0.00';
         return new Intl.NumberFormat('en-IN', {
             style: 'currency',
             currency: 'INR',
             minimumFractionDigits: 2,
             maximumFractionDigits: 2
-        }).format(num);
+        }).format(parseMoney(amount));
     }
 
-    /**
-     * Escape strings for safe HTML rendering
-     */
-    function escapeHTML(str) {
-        if (typeof str !== 'string') return '';
-        return str.replace(/[&<>'"]/g, (char) => ({
+    function escapeHTML(value) {
+        return String(value ?? '').replace(/[&<>'"]/g, char => ({
             '&': '&amp;',
             '<': '&lt;',
             '>': '&gt;',
             "'": '&#39;',
             '"': '&quot;'
-        }[char] || char));
+        })[char]);
     }
 
-    /**
-     * Display contextual user alerts in the feedback container
-     */
+    function generateId() {
+        const randomId = window.crypto?.randomUUID
+            ? window.crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+
+        return 'pay_' + Date.now().toString(36) + '_' +
+            randomId.replace(/-/g, '').slice(0, 12);
+    }
+
+    function getLocalDateString() {
+        const now = new Date();
+
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+
+        return `${year}-${month}-${day}`;
+    }
+
+    function isValidPeriod(period) {
+        if (typeof period !== 'string' ||
+            !/^\d{4}-(0[1-9]|1[0-2])$/.test(period)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    function getCurrentPeriod() {
+        if (isValidPeriod(currentSelectedPeriod)) {
+            return currentSelectedPeriod;
+        }
+
+        const now = new Date();
+
+        return [
+            now.getFullYear(),
+            String(now.getMonth() + 1).padStart(2, '0')
+        ].join('-');
+    }
+
+    function formatPeriodDisplay(periodKey) {
+        if (!isValidPeriod(periodKey)) {
+            return 'Unknown Period';
+        }
+
+        const [year, month] = periodKey.split('-').map(Number);
+
+        return new Date(year, month - 1, 1)
+            .toLocaleDateString('en-IN', {
+                month: 'long',
+                year: 'numeric'
+            });
+    }
+
+    function isValidDate(value) {
+        if (typeof value !== 'string' ||
+            !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+            return false;
+        }
+
+        const date = new Date(value + 'T00:00:00');
+
+        return !Number.isNaN(date.getTime()) &&
+            getDateString(date) === value;
+    }
+
+    function getDateString(date) {
+        return [
+            date.getFullYear(),
+            String(date.getMonth() + 1).padStart(2, '0'),
+            String(date.getDate()).padStart(2, '0')
+        ].join('-');
+    }
+
+    // ==========================================
+    // 3. DOM REFERENCES
+    // ==========================================
+
+    function cacheDOM() {
+        elements = {
+            navLinks: document.querySelectorAll(
+                '.sidebar-nav .nav-link'
+            ),
+
+            contentSections: document.querySelectorAll(
+                '.content-section'
+            ),
+
+            sidebar: document.querySelector('.sidebar'),
+            sidebarToggle: document.getElementById('sidebar-toggle'),
+            pageTitle: document.getElementById('page-title'),
+            currentDate: document.getElementById('current-date'),
+
+            feedbackContainer: document.getElementById(
+                'feedback-container'
+            ),
+
+            // Dashboard
+            summaryTotalRent: document.getElementById(
+                'summary-total-rent'
+            ),
+
+            summaryCollectedRent: document.getElementById(
+                'summary-collected-rent'
+            ),
+
+            summaryPendingRent: document.getElementById(
+                'summary-pending-rent'
+            ),
+
+            summaryTotalTenants: document.getElementById(
+                'summary-total-tenants'
+            ),
+
+            monthlyOverviewContent: document.getElementById(
+                'monthly-overview-content'
+            ),
+
+            // Payment modal
+            paymentModal: document.getElementById('payment-modal'),
+            paymentForm: document.getElementById('payment-form'),
+
+            paymentTenantSelect: document.getElementById(
+                'payment-tenant-select'
+            ),
+
+            paymentMonthInput: document.getElementById(
+                'payment-month'
+            ),
+
+            paymentAmountInput: document.getElementById(
+                'payment-amount'
+            ),
+
+            paymentDateInput: document.getElementById(
+                'payment-date'
+            ),
+
+            btnOpenPaymentModal: document.getElementById(
+                'btn-open-payment-modal'
+            ),
+
+            btnRecordPaymentHeader: document.getElementById(
+                'btn-record-payment'
+            ),
+
+            paymentModalCloseBtns: document.querySelectorAll(
+                '#payment-modal .modal-close-btn, ' +
+                '#payment-modal .modal-cancel-btn'
+            ),
+
+            // Payment table
+            paymentTableBody: document.getElementById(
+                'payment-table-body'
+            ),
+
+            // Invoice
+            invoiceSection: document.getElementById('invoice-section'),
+
+            btnGenerateInvoice: document.getElementById(
+                'btn-generate-invoice'
+            ),
+
+            invoicePreviewContainer: document.getElementById(
+                'invoice-preview-container'
+            ),
+
+            // Settings
+            settingsForm: document.getElementById('settings-form'),
+
+            settingPropertyName: document.getElementById(
+                'setting-property-name'
+            ),
+
+            settingLandlordName: document.getElementById(
+                'setting-landlord-name'
+            ),
+
+            settingDefaultRent: document.getElementById(
+                'setting-default-rent'
+            )
+        };
+    }
+
+    // ==========================================
+    // 4. FEEDBACK SYSTEM
+    // ==========================================
+
     function showFeedback(message, type = 'info') {
-        if (!elements.feedbackContainer) return;
-        const alert = document.createElement('div');
-        alert.className = `alert alert-${type === 'error' ? 'error' : (type === 'success' ? 'success' : 'info')}`;
-        alert.textContent = message;
+        if (!elements.feedbackContainer) {
+            console.log(message);
+            return;
+        }
 
-        elements.feedbackContainer.innerHTML = '';
-        elements.feedbackContainer.appendChild(alert);
+        const alertElement = document.createElement('div');
 
-        setTimeout(() => {
-            if (alert.parentNode) {
-                alert.parentNode.removeChild(alert);
+        const allowedTypes = ['error', 'success', 'info'];
+
+        const safeType = allowedTypes.includes(type)
+            ? type
+            : 'info';
+
+        alertElement.className = `alert alert-${safeType}`;
+        alertElement.textContent = message;
+
+        elements.feedbackContainer.replaceChildren(alertElement);
+
+        window.setTimeout(() => {
+            if (alertElement.parentNode === elements.feedbackContainer) {
+                alertElement.remove();
             }
         }, 4000);
     }
 
-    /**
-     * Load settings from localStorage
-     */
+    // ==========================================
+    // 5. SETTINGS MANAGEMENT
+    // ==========================================
+
     function loadSettings() {
         try {
             const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+
             if (raw) {
                 const parsed = JSON.parse(raw);
-                settings = Object.assign(settings, parsed);
+
+                if (parsed && typeof parsed === 'object' &&
+                    !Array.isArray(parsed)) {
+
+                    settings = {
+                        propertyName: String(
+                            parsed.propertyName || DEFAULT_SETTINGS.propertyName
+                        ).trim(),
+
+                        landlordName: String(
+                            parsed.landlordName || DEFAULT_SETTINGS.landlordName
+                        ).trim(),
+
+                        defaultRent: parseMoney(parsed.defaultRent)
+                    };
+                }
             }
-        } catch (e) {
-            console.error('Error loading settings from localStorage', e);
+        } catch (error) {
+            console.error('Settings loading failed:', error);
         }
 
-        if (elements.settingPropertyName) elements.settingPropertyName.value = settings.propertyName;
-        if (elements.settingLandlordName) elements.settingLandlordName.value = settings.landlordName;
-        if (elements.settingDefaultRent) elements.settingDefaultRent.value = settings.defaultRent;
+        if (elements.settingPropertyName) {
+            elements.settingPropertyName.value = settings.propertyName;
+        }
+
+        if (elements.settingLandlordName) {
+            elements.settingLandlordName.value = settings.landlordName;
+        }
+
+        if (elements.settingDefaultRent) {
+            elements.settingDefaultRent.value = settings.defaultRent;
+        }
     }
 
-    /**
-     * Save settings to localStorage
-     */
-    function saveSettings(e) {
-        if (e) e.preventDefault();
-        settings.propertyName = (elements.settingPropertyName.value || '').trim() || 'Rental Property';
-        settings.landlordName = (elements.settingLandlordName.value || '').trim() || 'Property Owner';
-        settings.defaultRent = parseFloat(elements.settingDefaultRent.value) || 0;
+    function saveSettings(event) {
+        if (event) {
+            event.preventDefault();
+        }
+
+        if (
+            !elements.settingPropertyName ||
+            !elements.settingLandlordName ||
+            !elements.settingDefaultRent
+        ) {
+            showFeedback('Settings form is incomplete.', 'error');
+            return;
+        }
+
+        const propertyName = elements.settingPropertyName.value.trim();
+        const landlordName = elements.settingLandlordName.value.trim();
+        const defaultRent = Number(elements.settingDefaultRent.value);
+
+        if (!propertyName || !landlordName) {
+            showFeedback('Property and landlord names are required.', 'error');
+            return;
+        }
+
+        if (!Number.isFinite(defaultRent) || defaultRent < 0) {
+            showFeedback('Enter a valid default rent.', 'error');
+            return;
+        }
+
+        const previousSettings = { ...settings };
+
+        settings = {
+            propertyName,
+            landlordName,
+            defaultRent: roundMoney(defaultRent)
+        };
 
         try {
-            localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+            localStorage.setItem(
+                SETTINGS_STORAGE_KEY,
+                JSON.stringify(settings)
+            );
+
             showFeedback('Settings saved successfully.', 'success');
             updateDashboard();
-        } catch (err) {
+
+        } catch (error) {
+            settings = previousSettings;
+
+            console.error('Settings saving failed:', error);
+
             showFeedback('Could not save settings.', 'error');
         }
     }
 
-    /**
-     * Load payment records safely from localStorage
-     */
+    // ==========================================
+    // 6. PAYMENT STORAGE
+    // ==========================================
+
     function loadPayments() {
         try {
             const raw = localStorage.getItem(PAYMENTS_STORAGE_KEY);
+
             if (!raw) {
                 payments = [];
                 return;
             }
+
             const parsed = JSON.parse(raw);
-            payments = Array.isArray(parsed) ? parsed : [];
-        } catch (err) {
-            console.error('Corrupted payment records detected. Resetting in-memory payments.', err);
+
+            if (!Array.isArray(parsed)) {
+                throw new Error('Payment data must be an array.');
+            }
+
+            payments = parsed.filter(payment => {
+                return payment &&
+                    typeof payment === 'object' &&
+                    typeof payment.id === 'string' &&
+                    typeof payment.tenantId === 'string' &&
+                    Number.isFinite(Number(payment.amount)) &&
+                    Number(payment.amount) > 0;
+            }).map(payment => ({
+                ...payment,
+                amount: roundMoney(Number(payment.amount))
+            }));
+
+        } catch (error) {
+            console.error('Payment storage loading failed:', error);
+
             payments = [];
-            showFeedback('Corrupted payment records found. Initializing empty dataset.', 'error');
+
+            showFeedback(
+                'Payment records could not be loaded. Please check your stored data.',
+                'error'
+            );
         }
     }
 
-    /**
-     * Persist payments to localStorage
-     */
     function savePaymentsToStorage() {
         try {
-            localStorage.setItem(PAYMENTS_STORAGE_KEY, JSON.stringify(payments));
+            localStorage.setItem(
+                PAYMENTS_STORAGE_KEY,
+                JSON.stringify(payments)
+            );
+
             return true;
-        } catch (err) {
-            console.error('Failed to persist payment.', err);
-            showFeedback('Storage quota exceeded or storage unavailable.', 'error');
+
+        } catch (error) {
+            console.error('Payment storage failed:', error);
+
+            showFeedback(
+                'Payment could not be saved. Storage may be unavailable.',
+                'error'
+            );
+
             return false;
         }
     }
 
-    /**
-     * Get the active rental period in YYYY-MM format
-     */
-    function getCurrentPeriod() {
-        if (currentSelectedPeriod) return currentSelectedPeriod;
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, '0');
-        return `${year}-${month}`;
+    // ==========================================
+    // 7. TENANT & PAYMENT CALCULATIONS
+    // ==========================================
+
+    function getElapsedMonths(startDateStr, targetPeriod) {
+        if (!isValidPeriod(targetPeriod)) {
+            return 0;
+        }
+
+        if (!startDateStr) {
+            return 1;
+        }
+
+        const startDate = new Date(startDateStr);
+
+        if (Number.isNaN(startDate.getTime())) {
+            return 1;
+        }
+
+        const [endYear, endMonth] = targetPeriod
+            .split('-')
+            .map(Number);
+
+        const startYear = startDate.getFullYear();
+        const startMonth = startDate.getMonth() + 1;
+
+        const monthDifference =
+            (endYear - startYear) * 12 +
+            (endMonth - startMonth) + 1;
+
+        return Math.max(0, monthDifference);
     }
 
     /**
-     * Convert YYYY-MM into a human-readable string (e.g. "November 2026")
+     * Get all payments for one tenant up to a selected period.
      */
-    function formatPeriodDisplay(periodKey) {
-        if (!periodKey || !periodKey.includes('-')) return periodKey;
-        const [year, month] = periodKey.split('-');
-        const date = new Date(parseInt(year, 10), parseInt(month, 10) - 1, 1);
-        return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    function getTenantAllTimePaid(tenantId, activePeriod) {
+        return roundMoney(
+            payments
+                .filter(payment => {
+                    return (
+                        payment.tenantId === tenantId &&
+                        isValidPeriod(payment.rentalPeriod) &&
+                        payment.rentalPeriod <= activePeriod
+                    );
+                })
+                .reduce((total, payment) => {
+                    return total + Number(payment.amount);
+                }, 0)
+        );
     }
 
     /**
-     * Populate tenant selection dropdowns
+     * Get payments for one particular rental period.
      */
-    function populateTenantDropdowns() {
-        if (!elements.paymentTenantSelect) return;
-        const tenants = window.TenantManager ? window.TenantManager.getAll() : [];
-        const currentVal = elements.paymentTenantSelect.value;
-
-        elements.paymentTenantSelect.innerHTML = '<option value="">-- Choose Tenant --</option>';
-        tenants.forEach((tenant) => {
-            const opt = document.createElement('option');
-            opt.value = tenant.id;
-            opt.textContent = `${tenant.fullName} (${formatCurrency(tenant.monthlyRent)}/mo)`;
-            elements.paymentTenantSelect.appendChild(opt);
-        });
-
-        elements.paymentTenantSelect.value = currentVal;
+    function getTenantPeriodPaid(tenantId, period) {
+        return roundMoney(
+            payments
+                .filter(payment => {
+                    return (
+                        payment.tenantId === tenantId &&
+                        payment.rentalPeriod === period
+                    );
+                })
+                .reduce((total, payment) => {
+                    return total + Number(payment.amount);
+                }, 0)
+        );
     }
 
     /**
-     * Calculate payments received for a given tenant during a specific period
+     * Calculate cumulative rent and outstanding balance.
      */
-    function getTenantPaidForPeriod(tenantId, period) {
-        return payments
-            .filter((p) => p.tenantId === tenantId && p.rentalPeriod === period)
-            .reduce((sum, p) => sum + Number(p.amount || 0), 0);
-    }
+    function calculateTenantTotalHistoricalDue(tenant, activePeriod) {
+        const monthlyRent = parseMoney(tenant.monthlyRent);
 
-    /**
-     * Core Business Logic: Calculate pending rent for a tenant in a specific period
-     */
-    function getTenantPeriodStatus(tenant, period) {
-        const monthlyRent = Number(tenant.monthlyRent) || 0;
-        const amountPaid = getTenantPaidForPeriod(tenant.id, period);
-        const pendingAmount = Math.max(0, monthlyRent - amountPaid);
+        const elapsedMonths = getElapsedMonths(
+            tenant.moveInDate,
+            activePeriod
+        );
+
+        const totalRentExpectedSinceStart = roundMoney(
+            monthlyRent * elapsedMonths
+        );
+
+        const totalPaidToDate = getTenantAllTimePaid(
+            tenant.id,
+            activePeriod
+        );
+
+        const totalPending = roundMoney(
+            Math.max(
+                0,
+                totalRentExpectedSinceStart - totalPaidToDate
+            )
+        );
 
         let status = 'UNPAID';
-        if (pendingAmount === 0 && monthlyRent > 0) {
+
+        if (totalRentExpectedSinceStart > 0 && totalPending === 0) {
             status = 'PAID';
-        } else if (amountPaid > 0 && pendingAmount > 0) {
+        } else if (totalPaidToDate > 0 && totalPending > 0) {
             status = 'PARTIAL';
         }
 
         return {
             tenant,
             monthlyRent,
-            amountPaid,
-            pendingAmount,
+            elapsedMonths,
+            totalRentExpectedSinceStart,
+            totalPaidToDate,
+            totalPending,
             status
         };
     }
 
     /**
-     * Update top dashboard summary cards & monthly rent overview
+     * Calculate invoice balances using payment periods.
+     *
+     * Earlier payments are allocated to earlier rent first.
+     * Any excess previous payment is carried forward as credit.
      */
+    function calculateInvoiceBalances(tenant, activePeriod, calculation) {
+        const previousMonths = Math.max(
+            0,
+            calculation.elapsedMonths - 1
+        );
+
+        const previousExpected = roundMoney(
+            calculation.monthlyRent * previousMonths
+        );
+
+        const currentPeriodPaid = getTenantPeriodPaid(
+            tenant.id,
+            activePeriod
+        );
+
+        const previousPeriodPaid = roundMoney(
+            calculation.totalPaidToDate - currentPeriodPaid
+        );
+
+        const previousBalance = roundMoney(
+            Math.max(0, previousExpected - previousPeriodPaid)
+        );
+
+        const previousCredit = roundMoney(
+            Math.max(0, previousPeriodPaid - previousExpected)
+        );
+
+        const amountPaid = roundMoney(
+            currentPeriodPaid + previousCredit
+        );
+
+        return {
+            previousExpected,
+            previousPeriodPaid,
+            currentPeriodPaid,
+            previousBalance,
+            previousCredit,
+            amountPaid
+        };
+    }
+
+    // ==========================================
+    // 8. TENANT DROPDOWN
+    // ==========================================
+
+    function populateTenantDropdowns() {
+        if (!elements.paymentTenantSelect) {
+            return;
+        }
+
+        const tenants = window.TenantManager &&
+            typeof window.TenantManager.getAll === 'function'
+            ? window.TenantManager.getAll()
+            : [];
+
+        const previousValue = elements.paymentTenantSelect.value;
+
+        elements.paymentTenantSelect.innerHTML =
+            '<option value="">-- Choose Tenant --</option>';
+
+        tenants.forEach(tenant => {
+            const option = document.createElement('option');
+
+            option.value = tenant.id;
+
+            option.textContent =
+                `${tenant.fullName} (${formatCurrency(tenant.monthlyRent)}/mo)`;
+
+            elements.paymentTenantSelect.appendChild(option);
+        });
+
+        const stillExists = tenants.some(
+            tenant => tenant.id === previousValue
+        );
+
+        elements.paymentTenantSelect.value = stillExists
+            ? previousValue
+            : '';
+    }
+
+    // ==========================================
+    // 9. DASHBOARD
+    // ==========================================
+
     function updateDashboard() {
-        const tenants = window.TenantManager ? window.TenantManager.getAll() : [];
+        const tenants = window.TenantManager &&
+            typeof window.TenantManager.getAll === 'function'
+            ? window.TenantManager.getAll()
+            : [];
+
         const activePeriod = getCurrentPeriod();
 
         let totalExpectedRent = 0;
         let totalCollectedRent = 0;
         let totalPendingRent = 0;
 
-        const tenantStatuses = tenants.map((tenant) => {
-            const stat = getTenantPeriodStatus(tenant, activePeriod);
-            totalExpectedRent += stat.monthlyRent;
-            totalCollectedRent += stat.amountPaid;
-            totalPendingRent += stat.pendingAmount;
-            return stat;
+        const tenantStatuses = tenants.map(tenant => {
+            const statistics = calculateTenantTotalHistoricalDue(
+                tenant,
+                activePeriod
+            );
+
+            totalExpectedRent += statistics.totalRentExpectedSinceStart;
+            totalCollectedRent += statistics.totalPaidToDate;
+            totalPendingRent += statistics.totalPending;
+
+            return statistics;
         });
 
         if (elements.summaryTotalRent) {
-            elements.summaryTotalRent.textContent = formatCurrency(totalExpectedRent);
+            elements.summaryTotalRent.textContent =
+                formatCurrency(totalExpectedRent);
         }
+
         if (elements.summaryCollectedRent) {
-            elements.summaryCollectedRent.textContent = formatCurrency(totalCollectedRent);
+            elements.summaryCollectedRent.textContent =
+                formatCurrency(totalCollectedRent);
         }
+
         if (elements.summaryPendingRent) {
-            elements.summaryPendingRent.textContent = formatCurrency(totalPendingRent);
+            elements.summaryPendingRent.textContent =
+                formatCurrency(totalPendingRent);
         }
+
         if (elements.summaryTotalTenants) {
-            elements.summaryTotalTenants.textContent = tenants.length.toString();
+            elements.summaryTotalTenants.textContent =
+                String(tenants.length);
         }
 
         renderMonthlyOverview(tenantStatuses, activePeriod);
         renderPaymentTable();
     }
 
-    /**
-     * Render the Monthly Rent Overview container on the dashboard
-     */
-    function renderMonthlyOverview(tenantStatuses, period) {
-        if (!elements.monthlyOverviewContent) return;
+    // ==========================================
+    // 10. MONTHLY OVERVIEW
+    // ==========================================
 
-        if (tenantStatuses.length === 0) {
-            elements.monthlyOverviewContent.innerHTML = `
-                <div class="empty-state" style="grid-column: 1 / -1;">
-                    <p>No active tenants configured.</p>
-                    <button class="btn btn-primary btn-open-tenant-modal">Add Your First Tenant</button>
-                </div>
-            `;
+    function renderMonthlyOverview(tenantStatuses, period) {
+        const container = elements.monthlyOverviewContent;
+
+        if (!container) {
             return;
         }
 
-        elements.monthlyOverviewContent.innerHTML = '';
+        if (tenantStatuses.length === 0) {
+            container.innerHTML = `
+                <div class="empty-state" style="grid-column:1/-1;">
+                    <p>No active tenants configured.</p>
 
-        tenantStatuses.forEach(({ tenant, monthlyRent, amountPaid, pendingAmount, status }) => {
+                    <button type="button"
+                        class="btn btn-primary btn-open-tenant-modal">
+                        Add Your First Tenant
+                    </button>
+                </div>
+            `;
+
+            return;
+        }
+
+        container.innerHTML = '';
+
+        tenantStatuses.forEach(statistics => {
+            const {
+                tenant,
+                monthlyRent,
+                elapsedMonths,
+                totalRentExpectedSinceStart,
+                totalPaidToDate,
+                totalPending,
+                status
+            } = statistics;
+
             const card = document.createElement('div');
+
             card.className = 'card';
             card.style.padding = '1.25rem';
             card.style.marginBottom = '0';
 
-            const badgeClass = status === 'PAID' ? 'badge-success' : (status === 'PARTIAL' ? 'badge-warning' : 'badge-danger');
+            const badgeClass = {
+                'PAID': 'badge-success',
+                'PARTIAL': 'badge-warning',
+                'UNPAID': 'badge-danger'
+            }[status];
 
             card.innerHTML = `
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem;">
+                <div style="
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:flex-start;
+                    margin-bottom:0.75rem;
+                    gap:0.5rem;
+                ">
                     <div>
-                        <h4 style="font-weight: 600; font-size: 1.05rem;">${escapeHTML(tenant.fullName)}</h4>
-                        <span class="text-muted" style="font-size: 0.85rem;">Period: ${formatPeriodDisplay(period)}</span>
+                        <h4 style="font-weight:600;font-size:1.05rem;">
+                            ${escapeHTML(tenant.fullName)}
+                        </h4>
+
+                        <span class="text-muted" style="font-size:0.85rem;">
+                            Since: ${escapeHTML(tenant.moveInDate || 'N/A')}
+                            (${elapsedMonths} mos)
+                        </span>
                     </div>
-                    <span class="badge ${badgeClass}">${status}</span>
+
+                    <span class="badge ${badgeClass}">
+                        ${status}
+                    </span>
                 </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 0.5rem;">
-                    <span class="text-secondary">Rent: ${formatCurrency(monthlyRent)}</span>
-                    <span class="text-success">Paid: ${formatCurrency(amountPaid)}</span>
+
+                <div class="rent-stat-row">
+                    <span>Monthly Rate:</span>
+                    <span>${formatCurrency(monthlyRent)}</span>
                 </div>
-                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; margin-bottom: 1rem;">
-                    <span class="text-secondary">Balance Due:</span>
-                    <strong class="${pendingAmount > 0 ? 'text-danger' : 'text-success'}">${formatCurrency(pendingAmount)}</strong>
+
+                <div class="rent-stat-row">
+                    <span>Total Due (${elapsedMonths} mos):</span>
+                    <span>${formatCurrency(totalRentExpectedSinceStart)}</span>
                 </div>
+
+                <div class="rent-stat-row">
+                    <span>Total Paid:</span>
+                    <span class="text-success">
+                        ${formatCurrency(totalPaidToDate)}
+                    </span>
+                </div>
+
+                <div class="rent-stat-row" style="
+                    border-top:1px dashed #334155;
+                    padding-top:0.5rem;
+                    margin-top:0.5rem;
+                ">
+                    <span>Remaining Balance:</span>
+
+                    <strong class="${
+                        totalPending > 0 ? 'text-danger' : 'text-success'
+                    }">
+                        ${formatCurrency(totalPending)}
+                    </strong>
+                </div>
+
                 <div class="action-buttons">
-                    <button class="btn btn-secondary btn-sm btn-quick-invoice" data-tenant-id="${tenant.id}">Invoice</button>
-                    <button class="btn btn-secondary btn-sm btn-quick-whatsapp" data-tenant-id="${tenant.id}" data-status="${status}">WhatsApp</button>
+                    <button type="button"
+                        class="btn btn-secondary btn-sm btn-quick-invoice"
+                        data-tenant-id="${escapeHTML(tenant.id)}">
+                        Invoice
+                    </button>
+
+                    <button type="button"
+                        class="btn btn-secondary btn-sm btn-quick-whatsapp"
+                        data-tenant-id="${escapeHTML(tenant.id)}"
+                        data-status="${status}">
+                        WhatsApp
+                    </button>
                 </div>
             `;
-            elements.monthlyOverviewContent.appendChild(card);
+
+            container.appendChild(card);
         });
     }
 
-    /**
-     * Render the Rent Payments table
-     */
-    function renderPaymentTable() {
-        if (!elements.paymentTableBody) return;
-        elements.paymentTableBody.innerHTML = '';
+    // ==========================================
+    // 11. PAYMENT TABLE
+    // ==========================================
 
-        if (payments.length === 0) {
-            const row = document.createElement('tr');
-            row.innerHTML = `<td colspan="6" class="text-muted" style="text-align: center; padding: 2rem;">No rent payments recorded yet.</td>`;
-            elements.paymentTableBody.appendChild(row);
+    function renderPaymentTable() {
+        const container = elements.paymentTableBody;
+
+        if (!container) {
             return;
         }
 
-        const tenants = window.TenantManager ? window.TenantManager.getAll() : [];
-        const tenantMap = new Map(tenants.map((t) => [t.id, t]));
+        container.innerHTML = '';
 
-        // Render most recent payments first
+        if (payments.length === 0) {
+            const row = document.createElement('tr');
+
+            row.innerHTML = `
+                <td colspan="6" class="text-muted"
+                    style="text-align:center;padding:2rem;">
+                    No rent payments recorded yet.
+                </td>
+            `;
+
+            container.appendChild(row);
+            return;
+        }
+
+        const tenants = window.TenantManager &&
+            typeof window.TenantManager.getAll === 'function'
+            ? window.TenantManager.getAll()
+            : [];
+
+        const tenantMap = new Map(
+            tenants.map(tenant => [tenant.id, tenant])
+        );
+
         const sortedPayments = payments.slice().reverse();
 
-        sortedPayments.forEach((payment) => {
+        sortedPayments.forEach(payment => {
             const tenant = tenantMap.get(payment.tenantId);
-            const tenantName = tenant ? tenant.fullName : 'Former / Unknown Tenant';
-            const monthlyDue = tenant ? tenant.monthlyRent : payment.amount;
+
+            const tenantName = tenant
+                ? tenant.fullName
+                : 'Former / Unknown Tenant';
+
+            const monthlyDue = tenant
+                ? tenant.monthlyRent
+                : 0;
 
             const row = document.createElement('tr');
+
             row.innerHTML = `
-                <td><strong>${escapeHTML(tenantName)}</strong></td>
-                <td>${escapeHTML(formatPeriodDisplay(payment.rentalPeriod))}</td>
+                <td>
+                    <strong>${escapeHTML(tenantName)}</strong>
+                </td>
+
+                <td>
+                    ${escapeHTML(
+                        formatPeriodDisplay(payment.rentalPeriod)
+                    )}
+                </td>
+
                 <td>${formatCurrency(monthlyDue)}</td>
-                <td class="text-success">${formatCurrency(payment.amount)}</td>
-                <td><span class="badge badge-success">RECORDED</span></td>
+
+                <td class="text-success">
+                    ${formatCurrency(payment.amount)}
+                </td>
+
+                <td>
+                    <span class="badge badge-success">RECORDED</span>
+                </td>
+
                 <td>
                     <div class="action-buttons">
-                        <button type="button" class="btn btn-danger btn-sm btn-delete-payment" data-id="${payment.id}">Delete</button>
+                        <button type="button"
+                            class="btn btn-danger btn-sm btn-delete-payment"
+                            data-id="${escapeHTML(payment.id)}">
+                            Delete
+                        </button>
                     </div>
                 </td>
             `;
-            elements.paymentTableBody.appendChild(row);
+
+            container.appendChild(row);
         });
     }
 
-    /**
-     * Open Payment Modal
-     */
+    // ==========================================
+    // 12. PAYMENT MODAL
+    // ==========================================
+
     function openPaymentModal(preselectedTenantId = null) {
-        if (!elements.paymentModal || !elements.paymentForm) return;
+        if (!elements.paymentModal || !elements.paymentForm) {
+            showFeedback('Payment modal not found.', 'error');
+            return;
+        }
 
         elements.paymentForm.reset();
+
         populateTenantDropdowns();
 
         if (preselectedTenantId && elements.paymentTenantSelect) {
@@ -413,48 +938,79 @@
         }
 
         if (elements.paymentDateInput) {
-            elements.paymentDateInput.value = new Date().toISOString().split('T')[0];
+            elements.paymentDateInput.value = getLocalDateString();
         }
 
         elements.paymentModal.classList.add('open');
+
         elements.paymentModal.setAttribute('aria-hidden', 'false');
     }
 
-    /**
-     * Close Payment Modal
-     */
     function closePaymentModal() {
-        if (!elements.paymentModal) return;
+        if (!elements.paymentModal) {
+            return;
+        }
+
         elements.paymentModal.classList.remove('open');
+
         elements.paymentModal.setAttribute('aria-hidden', 'true');
-        if (elements.paymentForm) elements.paymentForm.reset();
+
+        if (elements.paymentForm) {
+            elements.paymentForm.reset();
+        }
     }
 
-    /**
-     * Record a new rent payment
-     */
-    function handlePaymentFormSubmit(e) {
-        e.preventDefault();
+    // ==========================================
+    // 13. RECORD PAYMENT
+    // ==========================================
+
+    function handlePaymentFormSubmit(event) {
+        event.preventDefault();
+
+        if (
+            !elements.paymentTenantSelect ||
+            !elements.paymentMonthInput ||
+            !elements.paymentAmountInput ||
+            !elements.paymentDateInput
+        ) {
+            showFeedback('Payment form is incomplete.', 'error');
+            return;
+        }
 
         const tenantId = elements.paymentTenantSelect.value;
         const rentalPeriod = elements.paymentMonthInput.value;
-        const amount = parseFloat(elements.paymentAmountInput.value);
+        const amount = Number(elements.paymentAmountInput.value);
         const paymentDate = elements.paymentDateInput.value;
 
-        if (!tenantId) {
-            showFeedback('Please select a tenant.', 'error');
+        const tenants = window.TenantManager &&
+            typeof window.TenantManager.getAll === 'function'
+            ? window.TenantManager.getAll()
+            : [];
+
+        const tenantExists = tenants.some(
+            tenant => tenant.id === tenantId
+        );
+
+        if (!tenantId || !tenantExists) {
+            showFeedback('Please select a valid tenant.', 'error');
             return;
         }
-        if (!rentalPeriod) {
-            showFeedback('Please select a rental period.', 'error');
+
+        if (!isValidPeriod(rentalPeriod)) {
+            showFeedback('Please select a valid rental period.', 'error');
             return;
         }
-        if (isNaN(amount) || amount <= 0) {
-            showFeedback('Payment amount must be greater than zero.', 'error');
+
+        if (!Number.isFinite(amount) || amount <= 0) {
+            showFeedback(
+                'Payment amount must be greater than zero.',
+                'error'
+            );
             return;
         }
-        if (!paymentDate) {
-            showFeedback('Please select the payment date.', 'error');
+
+        if (!isValidDate(paymentDate)) {
+            showFeedback('Please select a valid payment date.', 'error');
             return;
         }
 
@@ -462,54 +1018,105 @@
             id: generateId(),
             tenantId,
             rentalPeriod,
-            amount,
+            amount: roundMoney(amount),
             paymentDate,
             paymentMethod: 'Standard'
         };
 
         payments.push(newPayment);
-        savePaymentsToStorage();
+
+        // Never show success if storage fails.
+        if (!savePaymentsToStorage()) {
+            payments.pop();
+            return;
+        }
+
         closePaymentModal();
         updateDashboard();
+
         showFeedback('Payment recorded successfully.', 'success');
     }
 
-    /**
-     * Delete a payment record after confirmation
-     */
+    // ==========================================
+    // 14. DELETE PAYMENT
+    // ==========================================
+
     function deletePayment(paymentId) {
-        const payment = payments.find((p) => p.id === paymentId);
-        if (!payment) return;
+        const index = payments.findIndex(
+            payment => payment.id === paymentId
+        );
 
-        const confirmed = window.confirm(`Are you sure you want to delete this payment of ${formatCurrency(payment.amount)}?`);
-        if (!confirmed) return;
+        if (index === -1) {
+            showFeedback('Payment record not found.', 'error');
+            return;
+        }
 
-        payments = payments.filter((p) => p.id !== paymentId);
-        savePaymentsToStorage();
+        const payment = payments[index];
+
+        const confirmed = window.confirm(
+            `Delete payment of ${formatCurrency(payment.amount)}?`
+        );
+
+        if (!confirmed) {
+            return;
+        }
+
+        const removedPayment = payments.splice(index, 1)[0];
+
+        if (!savePaymentsToStorage()) {
+            payments.splice(index, 0, removedPayment);
+            return;
+        }
+
         updateDashboard();
+
         showFeedback('Payment record deleted.', 'success');
     }
 
-    /**
-     * Handle Invoice rendering and download
-     */
+    // ==========================================
+    // 15. INVOICE GENERATION
+    // ==========================================
+
+    function getInvoiceManager() {
+        return window.InvoiceManager || window.RentFlowInvoice || null;
+    }
+
     function triggerInvoiceAction(tenantId, action = 'preview') {
-        if (!window.InvoiceManager) {
+        const invoiceManager = getInvoiceManager();
+
+        if (!invoiceManager) {
             showFeedback('Invoice module not loaded.', 'error');
-            return;
+            return false;
         }
 
-        const tenant = window.TenantManager ? window.TenantManager.getById(tenantId) : null;
+        const tenantManager = window.TenantManager;
+
+        const tenant = tenantManager &&
+            typeof tenantManager.getById === 'function'
+            ? tenantManager.getById(tenantId)
+            : null;
+
         if (!tenant) {
-            showFeedback('Tenant record not found for invoice.', 'error');
-            return;
+            showFeedback('Tenant record not found.', 'error');
+            return false;
         }
 
         const period = getCurrentPeriod();
-        const amountPaid = getTenantPaidForPeriod(tenant.id, period);
+
+        const calculation = calculateTenantTotalHistoricalDue(
+            tenant,
+            period
+        );
+
+        const balances = calculateInvoiceBalances(
+            tenant,
+            period,
+            calculation
+        );
 
         const invoicePayload = {
             rentalPeriod: formatPeriodDisplay(period),
+
             tenant: {
                 id: tenant.id,
                 fullName: tenant.fullName,
@@ -517,114 +1124,200 @@
                 email: tenant.email,
                 unitNumber: settings.propertyName
             },
+
             landlord: {
                 name: settings.landlordName,
                 propertyName: settings.propertyName
             },
+
             charges: {
-                monthlyRent: tenant.monthlyRent,
+                monthlyRent: calculation.elapsedMonths > 0
+                    ? calculation.monthlyRent
+                    : 0,
+
                 additionalCharges: 0,
-                previousBalance: 0
+
+                previousBalance: balances.previousBalance
             },
-            amountPaid: amountPaid
+
+            amountPaid: balances.amountPaid
         };
 
         if (action === 'download') {
-            window.InvoiceManager.downloadPDF(invoicePayload);
-        } else {
-            // Switch to Invoices view and render preview
-            navigateToSection('invoice-section');
-            window.InvoiceManager.renderPreview(invoicePayload, 'invoice-preview-container');
+            if (typeof invoiceManager.downloadPDF !== 'function') {
+                showFeedback('PDF generation is unavailable.', 'error');
+                return false;
+            }
+
+            return invoiceManager.downloadPDF(invoicePayload);
         }
+
+        if (typeof invoiceManager.renderPreview !== 'function') {
+            showFeedback('Invoice preview is unavailable.', 'error');
+            return false;
+        }
+
+        navigateToSection('invoice-section');
+
+        return invoiceManager.renderPreview(
+            invoicePayload,
+            'invoice-preview-container'
+        );
     }
 
-    /**
-     * Handle WhatsApp notifications
-     */
+    // ==========================================
+    // 16. WHATSAPP INTEGRATION
+    // ==========================================
+
     function triggerWhatsAppAction(tenantId, status) {
-        if (!window.WhatsAppManager) {
+        const manager = window.WhatsAppManager;
+
+        if (!manager) {
             showFeedback('WhatsApp module not loaded.', 'error');
-            return;
+            return false;
         }
 
-        const tenant = window.TenantManager ? window.TenantManager.getById(tenantId) : null;
+        const tenant = window.TenantManager &&
+            typeof window.TenantManager.getById === 'function'
+            ? window.TenantManager.getById(tenantId)
+            : null;
+
         if (!tenant) {
             showFeedback('Tenant not found.', 'error');
+            return false;
+        }
+
+        const period = getCurrentPeriod();
+
+        const calculation = calculateTenantTotalHistoricalDue(
+            tenant,
+            period
+        );
+
+        const periodName = formatPeriodDisplay(period);
+
+        const messageData = {
+            month: periodName,
+            amountPaid: calculation.totalPaidToDate,
+            amountDue: calculation.totalPending,
+            balanceRemaining: calculation.totalPending,
+            paymentDate: getLocalDateString()
+        };
+
+        let message = '';
+
+        if (status === 'PAID') {
+            if (typeof manager.generateConfirmationMessage !== 'function') {
+                showFeedback('WhatsApp confirmation generator unavailable.', 'error');
+                return false;
+            }
+
+            message = manager.generateConfirmationMessage(
+                tenant,
+                messageData
+            );
+
+        } else if (status === 'PARTIAL') {
+            if (typeof manager.generatePendingSummaryMessage !== 'function') {
+                showFeedback('WhatsApp pending message generator unavailable.', 'error');
+                return false;
+            }
+
+            message = manager.generatePendingSummaryMessage(
+                tenant,
+                messageData
+            );
+
+        } else {
+            if (typeof manager.generateReminderMessage !== 'function') {
+                showFeedback('WhatsApp reminder generator unavailable.', 'error');
+                return false;
+            }
+
+            message = manager.generateReminderMessage(
+                tenant,
+                messageData
+            );
+        }
+
+        const confirmed = window.confirm(
+            `Preview message for ${tenant.fullName}:\n\n` +
+            `${message}\n\nProceed to WhatsApp?`
+        );
+
+        if (!confirmed) {
+            return false;
+        }
+
+        if (typeof manager.openWhatsAppChat !== 'function') {
+            showFeedback('WhatsApp chat function unavailable.', 'error');
+            return false;
+        }
+
+        manager.openWhatsAppChat(tenant.phone, message);
+
+        return true;
+    }
+
+    // ==========================================
+    // 17. NAVIGATION
+    // ==========================================
+
+    function navigateToSection(targetSectionId) {
+        if (!targetSectionId) {
             return;
         }
 
-        const period = formatPeriodDisplay(getCurrentPeriod());
-        const activePeriod = getCurrentPeriod();
-        const amountPaid = getTenantPaidForPeriod(tenant.id, activePeriod);
-        const monthlyRent = Number(tenant.monthlyRent) || 0;
-        const balanceRemaining = Math.max(0, monthlyRent - amountPaid);
-
-        let message = '';
-        if (status === 'PAID') {
-            message = window.WhatsAppManager.generateConfirmationMessage(tenant, {
-                month: period,
-                amountPaid: amountPaid,
-                balanceRemaining: 0,
-                paymentDate: new Date().toISOString().split('T')[0]
-            });
-        } else if (status === 'PARTIAL') {
-            message = window.WhatsAppManager.generatePendingSummaryMessage(tenant, {
-                month: period,
-                amountDue: balanceRemaining
-            });
-        } else {
-            message = window.WhatsAppManager.generateReminderMessage(tenant, {
-                month: period,
-                amountDue: monthlyRent
-            });
-        }
-
-        // Preview message before dispatch
-        const confirmed = window.confirm(`Preview message for ${tenant.fullName}:\n\n${message}\n\nProceed to WhatsApp?`);
-        if (confirmed) {
-            window.WhatsAppManager.openWhatsAppChat(tenant.phone, message);
-        }
-    }
-
-    /**
-     * SPA Tab Navigation
-     */
-    function navigateToSection(targetSectionId) {
-        elements.contentSections.forEach((section) => {
-            section.classList.toggle('active', section.id === targetSectionId);
+        elements.contentSections.forEach(section => {
+            section.classList.toggle(
+                'active',
+                section.id === targetSectionId
+            );
         });
 
-        elements.navLinks.forEach((link) => {
-            const linkTarget = link.getAttribute('data-target');
-            link.classList.toggle('active', linkTarget === targetSectionId);
+        elements.navLinks.forEach(link => {
+            const target = link.getAttribute('data-target');
+
+            link.classList.toggle(
+                'active',
+                target === targetSectionId
+            );
         });
 
-        // Update top navbar page title
-        const activeLink = document.querySelector(`.sidebar-nav .nav-link[data-target="${targetSectionId}"]`);
+        const activeLink = Array.from(elements.navLinks).find(
+            link => link.getAttribute('data-target') === targetSectionId
+        );
+
         if (activeLink && elements.pageTitle) {
-            elements.pageTitle.textContent = activeLink.textContent;
+            elements.pageTitle.textContent =
+                activeLink.textContent.trim();
         }
 
-        // Close sidebar on mobile upon navigation
-        if (elements.sidebar && elements.sidebar.classList.contains('open')) {
+        if (elements.sidebar) {
             elements.sidebar.classList.remove('open');
         }
     }
 
-    /**
-     * Attach application-level event listeners
-     */
+    // ==========================================
+    // 18. EVENT LISTENERS
+    // ==========================================
+
     function attachEventListeners() {
-        // Sidebar Navigation
-        elements.navLinks.forEach((link) => {
-            link.addEventListener('click', (e) => {
-                e.preventDefault();
+
+        // Sidebar navigation
+        elements.navLinks.forEach(link => {
+            link.addEventListener('click', event => {
+                event.preventDefault();
+
                 const target = link.getAttribute('data-target');
-                if (target) navigateToSection(target);
+
+                if (target) {
+                    navigateToSection(target);
+                }
             });
         });
 
-        // Mobile Sidebar Toggle
+        // Sidebar toggle
         if (elements.sidebarToggle) {
             elements.sidebarToggle.addEventListener('click', () => {
                 if (elements.sidebar) {
@@ -633,144 +1326,271 @@
             });
         }
 
-        // Close sidebar when clicking outside on mobile
-        document.addEventListener('click', (e) => {
+        // Close sidebar when clicking outside.
+        document.addEventListener('click', event => {
             if (
-                elements.sidebar &&
-                elements.sidebar.classList.contains('open') &&
-                !elements.sidebar.contains(e.target) &&
-                e.target !== elements.sidebarToggle
+                !elements.sidebar ||
+                !elements.sidebar.classList.contains('open')
             ) {
+                return;
+            }
+
+            const clickedInsideSidebar =
+                elements.sidebar.contains(event.target);
+
+            const clickedToggle =
+                elements.sidebarToggle &&
+                elements.sidebarToggle.contains(event.target);
+
+            if (!clickedInsideSidebar && !clickedToggle) {
                 elements.sidebar.classList.remove('open');
             }
         });
 
-        // Modal triggers for Payments
+        // Open payment modal
         if (elements.btnOpenPaymentModal) {
-            elements.btnOpenPaymentModal.addEventListener('click', () => openPaymentModal());
+            elements.btnOpenPaymentModal.addEventListener(
+                'click',
+                () => openPaymentModal()
+            );
         }
+
         if (elements.btnRecordPaymentHeader) {
-            elements.btnRecordPaymentHeader.addEventListener('click', () => openPaymentModal());
+            elements.btnRecordPaymentHeader.addEventListener(
+                'click',
+                () => openPaymentModal()
+            );
         }
-        elements.paymentModalCloseBtns.forEach((btn) => {
-            btn.addEventListener('click', closePaymentModal);
+
+        // Close payment modal
+        elements.paymentModalCloseBtns.forEach(button => {
+            button.addEventListener('click', closePaymentModal);
         });
 
-        // Backdrop click to close payment modal
         if (elements.paymentModal) {
-            elements.paymentModal.addEventListener('click', (e) => {
-                if (e.target === elements.paymentModal) closePaymentModal();
-            });
-        }
-
-        // Payment Form Submission
-        if (elements.paymentForm) {
-            elements.paymentForm.addEventListener('submit', handlePaymentFormSubmit);
-        }
-
-        // Payment table row deletion delegation
-        if (elements.paymentTableBody) {
-            elements.paymentTableBody.addEventListener('click', (e) => {
-                const deleteBtn = e.target.closest('.btn-delete-payment');
-                if (deleteBtn) {
-                    const id = deleteBtn.getAttribute('data-id');
-                    deletePayment(id);
+            elements.paymentModal.addEventListener('click', event => {
+                if (event.target === elements.paymentModal) {
+                    closePaymentModal();
                 }
             });
         }
 
-        // Monthly overview button delegation (Invoices & WhatsApp)
-        if (elements.monthlyOverviewContent) {
-            elements.monthlyOverviewContent.addEventListener('click', (e) => {
-                const invoiceBtn = e.target.closest('.btn-quick-invoice');
-                if (invoiceBtn) {
-                    const tenantId = invoiceBtn.getAttribute('data-tenant-id');
-                    triggerInvoiceAction(tenantId, 'preview');
+        // Payment submission
+        if (elements.paymentForm) {
+            elements.paymentForm.addEventListener(
+                'submit',
+                handlePaymentFormSubmit
+            );
+        }
+
+        // Payment deletion (event delegation)
+        if (elements.paymentTableBody) {
+            elements.paymentTableBody.addEventListener('click', event => {
+                const button = event.target.closest(
+                    '.btn-delete-payment'
+                );
+
+                if (!button) {
                     return;
                 }
 
-                const waBtn = e.target.closest('.btn-quick-whatsapp');
-                if (waBtn) {
-                    const tenantId = waBtn.getAttribute('data-tenant-id');
-                    const status = waBtn.getAttribute('data-status');
-                    triggerWhatsAppAction(tenantId, status);
-                }
+                deletePayment(button.getAttribute('data-id'));
             });
         }
 
-        // Invoice Section Generate Button
+        // Dashboard quick actions
+        if (elements.monthlyOverviewContent) {
+            elements.monthlyOverviewContent.addEventListener(
+                'click',
+                event => {
+
+                    const invoiceButton = event.target.closest(
+                        '.btn-quick-invoice'
+                    );
+
+                    if (invoiceButton) {
+                        triggerInvoiceAction(
+                            invoiceButton.getAttribute('data-tenant-id'),
+                            'preview'
+                        );
+
+                        return;
+                    }
+
+                    const whatsappButton = event.target.closest(
+                        '.btn-quick-whatsapp'
+                    );
+
+                    if (whatsappButton) {
+                        triggerWhatsAppAction(
+                            whatsappButton.getAttribute('data-tenant-id'),
+                            whatsappButton.getAttribute('data-status')
+                        );
+                    }
+                }
+            );
+        }
+
+        // Main invoice button
         if (elements.btnGenerateInvoice) {
             elements.btnGenerateInvoice.addEventListener('click', () => {
-                const tenants = window.TenantManager ? window.TenantManager.getAll() : [];
+                const tenants = window.TenantManager &&
+                    typeof window.TenantManager.getAll === 'function'
+                    ? window.TenantManager.getAll()
+                    : [];
+
                 if (tenants.length === 0) {
-                    showFeedback('No tenants available to generate invoice.', 'error');
+                    showFeedback(
+                        'No tenants available to generate invoice.',
+                        'error'
+                    );
+
                     return;
                 }
-                triggerInvoiceAction(tenants[0].id, 'download');
+
+                const selectedTenantId =
+                    elements.paymentTenantSelect?.value;
+
+                if (selectedTenantId) {
+                    triggerInvoiceAction(
+                        selectedTenantId,
+                        'download'
+                    );
+
+                } else if (tenants.length === 1) {
+                    triggerInvoiceAction(
+                        tenants[0].id,
+                        'download'
+                    );
+
+                } else {
+                    showFeedback(
+                        'Please select a tenant from the payment tenant dropdown first.',
+                        'error'
+                    );
+                }
             });
         }
 
-        // Settings Form Submission
+        // Settings form
         if (elements.settingsForm) {
-            elements.settingsForm.addEventListener('submit', saveSettings);
+            elements.settingsForm.addEventListener(
+                'submit',
+                saveSettings
+            );
         }
 
-        // Reactive integration with TenantManager
+        // Tenant manager updates
         window.addEventListener('rentflow:tenants-changed', () => {
             populateTenantDropdowns();
             updateDashboard();
         });
     }
 
-    /**
-     * Render the current formatted date in the top navbar
-     */
+    // ==========================================
+    // 19. DATE DISPLAY
+    // ==========================================
+
     function renderCurrentDate() {
-        if (!elements.currentDate) return;
-        const now = new Date();
-        elements.currentDate.textContent = now.toLocaleDateString('en-US', {
-            weekday: 'short',
-            year: 'numeric',
-            month: 'short',
-            day: 'numeric'
-        });
+        if (!elements.currentDate) {
+            return;
+        }
+
+        elements.currentDate.textContent =
+            new Date().toLocaleDateString('en-IN', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
     }
 
-    /**
-     * Initialize the Application
-     */
+    // ==========================================
+    // 20. APPLICATION INITIALIZATION
+    // ==========================================
+
     function init() {
+        if (initialized) {
+            return;
+        }
+
+        initialized = true;
+
         cacheDOM();
+
         currentSelectedPeriod = getCurrentPeriod();
 
         renderCurrentDate();
+
         loadSettings();
         loadPayments();
 
-        // Initialize tenant module
-        if (window.TenantManager && typeof window.TenantManager.init === 'function') {
+        // Initialize tenant module first.
+        if (
+            window.TenantManager &&
+            typeof window.TenantManager.init === 'function'
+        ) {
             window.TenantManager.init();
         }
 
         populateTenantDropdowns();
+
         attachEventListeners();
+
         updateDashboard();
+
+        console.log('RentFlow application initialized successfully.');
     }
 
-    // Initialize application when DOM is ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    // ==========================================
+    // 21. PUBLIC APPLICATION API
+    // ==========================================
 
-    // Expose application namespace for external inspection or testing
     window.RentFlowApp = {
         init,
         updateDashboard,
         openPaymentModal,
+        closePaymentModal,
         triggerInvoiceAction,
-        triggerWhatsAppAction
+        triggerWhatsAppAction,
+        navigateToSection,
+        getCurrentPeriod,
+        formatCurrency,
+        calculateTenantTotalHistoricalDue,
+        calculateInvoiceBalances,
+
+        // Period setter for future filtering UI.
+        setSelectedPeriod(period) {
+            if (!isValidPeriod(period)) {
+                showFeedback('Invalid rental period.', 'error');
+                return false;
+            }
+
+            currentSelectedPeriod = period;
+            updateDashboard();
+
+            return true;
+        },
+
+        getPayments() {
+            return payments.map(payment => ({ ...payment }));
+        },
+
+        getSettings() {
+            return { ...settings };
+        }
     };
 
-})(window);
+    // ==========================================
+    // 22. START APPLICATION
+    // ==========================================
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init, {
+            once: true
+        });
+    } else {
+        init();
+    }
+
+})(window, document);
