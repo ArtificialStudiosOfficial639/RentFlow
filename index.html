@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RentFlow - Rent Management System</title>
+    
+    <!-- Stylesheets -->
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/responsive.css">
+    
+    <!-- External Library Dependency: jsPDF -->
+    <!-- jsPDF is loaded from cdnjs to enable client-side generation and downloading of PDF rent invoices directly in the browser without backend dependencies. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" aria-label="Main Navigation">
+            <div class="sidebar-header">
+                <img src="assets/logo.svg" alt="RentFlow Logo" class="brand-logo" onerror="this.style.display='none'">
+                <h1 class="brand-name">RentFlow</h1>
+            </div>
+            <nav class="sidebar-nav">
+                <ul>
+                    <li><a href="#dashboard" class="nav-link active" data-target="dashboard-section">Dashboard</a></li>
+                    <li><a href="#tenants" class="nav-link" data-target="tenant-section">Tenant Management</a></li>
+                    <li><a href="#payments" class="nav-link" data-target="payment-section">Rent Payments</a></li>
+                    <li><a href="#invoices" class="nav-link" data-target="invoice-section">Invoices</a></li>
+                    <li><a href="#settings" class="nav-link" data-target="settings-section">Settings</a></li>
+                </ul>
+            </nav>
+        </aside>
+
+        <!-- Main Content Wrapper -->
+        <div class="main-wrapper">
+            <!-- Top Navigation Bar -->
+            <header class="top-navbar">
+                <div class="navbar-left">
+                    <button id="sidebar-toggle" class="sidebar-toggle-btn" aria-label="Toggle Sidebar">☰</button>
+                    <h2 id="page-title" class="page-title">Dashboard</h2>
+                </div>
+                <div class="navbar-right">
+                    <div id="current-date" class="current-date" aria-label="Current Date"></div>
+                </div>
+            </header>
+
+            <!-- Main Content Area -->
+            <main class="main-content">
+                <!-- Feedback Area for Loading, Errors, and Success Messages -->
+                <div id="feedback-container" class="feedback-container" aria-live="polite"></div>
+
+                <!-- 1. Dashboard Section -->
+                <section id="dashboard-section" class="content-section active">
+                    <!-- Dashboard Summary Cards -->
+                    <div class="summary-cards-grid">
+                        <div class="card summary-card">
+                            <h3>Total Monthly Rent</h3>
+                            <p id="summary-total-rent" class="card-value">$0.00</p>
+                        </div>
+                        <div class="card summary-card">
+                            <h3>Rent Collected</h3>
+                            <p id="summary-collected-rent" class="card-value text-success">$0.00</p>
+                        </div>
+                        <div class="card summary-card">
+                            <h3>Pending Rent</h3>
+                            <p id="summary-pending-rent" class="card-value text-danger">$0.00</p>
+                        </div>
+                        <div class="card summary-card">
+                            <h3>Total Tenants</h3>
+                            <p id="summary-total-tenants" class="card-value">0</p>
+                        </div>
+                    </div>
+
+                    <!-- Monthly Rent Overview Section -->
+                    <div class="card overview-card">
+                        <div class="card-header">
+                            <h3>Monthly Rent Overview</h3>
+                            <div class="action-buttons">
+                                <button id="btn-open-tenant-modal" class="btn btn-primary">Add Tenant</button>
+                                <button id="btn-record-payment" class="btn btn-secondary">Record Payment</button>
+                            </div>
+                        </div>
+                        <div class="card-body">
+                            <div id="monthly-overview-content" class="overview-content">
+                                <!-- Populated dynamically by app.js / tenant.js -->
+                                <p class="text-muted">Loading overview data...</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 2. Tenant Management Section -->
+                <section id="tenant-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Tenant Management</h3>
+                            <button class="btn btn-primary btn-open-tenant-modal">Add New Tenant</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-controls">
+                                <input type="text" id="tenant-search" class="form-control" placeholder="Search tenants by name, email, or phone..." aria-label="Search tenants">
+                            </div>
+                            <div class="table-responsive">
+                                <table id="tenant-table" class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Tenant Name</th>
+                                            <th>Phone</th>
+                                            <th>Email</th>
+                                            <th>Lease Start</th>
+                                            <th>Monthly Rent</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="tenant-table-body">
+                                        <!-- Populated dynamically -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 3. Rent Payments Section -->
+                <section id="payment-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Rent Payment Status</h3>
+                            <button id="btn-open-payment-modal" class="btn btn-primary">Record Payment</button>
+                        </div>
+                        <div class="card-body">
+                            <div class="table-responsive">
+                                <table id="payment-table" class="data-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Tenant Name</th>
+                                            <th>Month</th>
+                                            <th>Amount Due</th>
+                                            <th>Amount Paid</th>
+                                            <th>Status</th>
+                                            <th>Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="payment-table-body">
+                                        <!-- Populated dynamically -->
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 4. Invoices Section -->
+                <section id="invoice-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Invoice Management & Preview</h3>
+                            <button id="btn-generate-invoice" class="btn btn-primary">Generate PDF Invoice</button>
+                        </div>
+                        <div class="card-body">
+                            <!-- Invoice Preview Container -->
+                            <div id="invoice-preview-container" class="invoice-preview-container" aria-label="Invoice Preview">
+                                <div class="invoice-placeholder">
+                                    <p class="text-muted">Select a tenant and month to preview invoice.</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- 5. Settings Section -->
+                <section id="settings-section" class="content-section">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>System Settings</h3>
+                        </div>
+                        <div class="card-body">
+                            <form id="settings-form">
+                                <div class="form-group">
+                                    <label for="setting-property-name">Property Name / Flat Title</label>
+                                    <input type="text" id="setting-property-name" class="form-control" value="Flat 4B, Sunset Apartments">
+                                </div>
+                                <div class="form-group">
+                                    <label for="setting-landlord-name">Landlord Name</label>
+                                    <input type="text" id="setting-landlord-name" class="form-control" value="Property Owner">
+                                </div>
+                                <div class="form-group">
+                                    <label for="setting-default-rent">Default Monthly Rent ($)</label>
+                                    <input type="number" id="setting-default-rent" class="form-control" value="1200" min="0" step="0.01">
+                                </div>
+                                <button type="submit" class="btn btn-primary">Save Settings</button>
+                            </form>
+                        </div>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- Tenant Form Modal / Dialog -->
+    <div id="tenant-modal" class="modal" role="dialog" aria-labelledby="tenant-modal-title" aria-hidden="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="tenant-modal-title">Tenant Information</h3>
+                <button type="button" class="modal-close-btn" aria-label="Close modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="tenant-form">
+                    <input type="hidden" id="tenant-id">
+                    <div class="form-group">
+                        <label for="tenant-name">Full Name *</label>
+                        <input type="text" id="tenant-name" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="tenant-phone">Phone Number *</label>
+                        <input type="tel" id="tenant-phone" class="form-control" placeholder="+1234567890" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="tenant-email">Email Address</label>
+                        <input type="email" id="tenant-email" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="tenant-lease-start">Lease Start Date *</label>
+                        <input type="date" id="tenant-lease-start" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="tenant-monthly-rent">Monthly Rent Amount ($) *</label>
+                        <input type="number" id="tenant-monthly-rent" class="form-control" min="0" step="0.01" required>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-cancel-btn">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Save Tenant</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Payment Form Modal / Dialog -->
+    <div id="payment-modal" class="modal" role="dialog" aria-labelledby="payment-modal-title" aria-hidden="true">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="payment-modal-title">Record Rent Payment</h3>
+                <button type="button" class="modal-close-btn" aria-label="Close modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="payment-form">
+                    <div class="form-group">
+                        <label for="payment-tenant-select">Select Tenant *</label>
+                        <select id="payment-tenant-select" class="form-control" required>
+                            <option value="">-- Choose Tenant --</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="payment-month">Month & Year *</label>
+                        <input type="month" id="payment-month" class="form-control" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="payment-amount">Amount Paid ($) *</label>
+                        <input type="number" id="payment-amount" class="form-control" min="0" step="0.01" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="payment-date">Payment Date *</label>
+                        <input type="date" id="payment-date" class="form-control" required>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary modal-cancel-btn">Cancel</button>
+                        <button type="submit" class="btn btn-primary">Record Payment</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript Files loaded respecting dependency order -->
+    <script src="js/tenant.js"></script>
+    <script src="js/invoice.js"></script>
+    <script src="js/whatsapp.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
